@@ -149,6 +149,11 @@ export default {
             timeout_IDS_live: [],
 
             mixer_data: null,
+
+            agentLoaded: false,
+            permissionAudio: false,
+            permissionMIDI: false,
+            permissionsGranted: false
         };
     },
 
@@ -212,6 +217,45 @@ export default {
     async mounted() {
         console.log('main mounted');
         const vm = this;
+        /*
+        * Minor
+        */
+        window.onresize = () => {
+            return (() => {
+                window.screenWidth = document.body.clientWidth;
+                vm.screenWidth = window.screenWidth;
+            })();
+        };
+
+        // Prevent spacebar trigger any button
+        // document.querySelectorAll('button').forEach(function(item) {
+        //     item.addEventListener('focus', function() {
+        //         this.blur();
+        //     });
+        // });
+        document.querySelectorAll('button').forEach((item) => {
+            item.addEventListener('focus', () => {
+                item.blur();
+            });
+        });
+
+        // spacebar trigger play btn
+        document.addEventListener('keypress', function(event) {
+            if (event.code == 'Space' && !vm.$store.getters.getModalStatus) {
+                // spacebar could toggle clock
+                vm.toggleClock();
+            }
+        });
+
+        document.addEventListener('visibilitychange', function() {
+            console.log('Visibility changed');
+            console.log(vm.$refs.entryBtn.style.visibility);
+        });
+
+        window.onload = function() {
+            console.log('window loaded');
+        };
+        
         if (vm.showMonitor) {
             console.log('MA DEN EPREPE');
             vm.$root.$refs.monitor.loadMonitorConfig(vm.config.gui.monitor);
@@ -296,64 +340,92 @@ export default {
             /*
             * Initialize Audio Recorder (for audio recording).
             */
+            // vm.audio_sucess = true;
+            // try {
+
+            // TODO: this is not correct. Needs to be in a try/catch
+            // but for some reason it doesn't work
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: true,
                 video: false,
             });
+            console.log('Audio stream initialized');    
+            vm.permissionAudio = true;
+            // } catch (error) {
+            //     console.error('Error accessing the microphone: ', error);
+            //     vm.audio_success = false;
+            // }
 
-            vm.mediaStreamSource = vm.audioContext.createMediaStreamSource(
-                stream,
-            );
+            if (vm.permissionAudio) {
+                
+                vm.mediaStreamSource = vm.audioContext.createMediaStreamSource(
+                    stream,
+                );
+                console.log('Audio stream initialized');
+
+                vm.analyserNode = vm.audioContext.createAnalyser();
+
+                vm.mediaStreamSource.connect(vm.analyserNode);
+
+                if (vm.config.gui.audioMeter.status) {
+                    vm.$root.$refs.audioMeter.init(vm.analyserNode);
+                    vm.$root.$refs.audioMeter.updateAnalysis();
+                }
+            
+                // vm.$root.$refs.vectorBar.init();
+                // vm.$root.$refs.vectorBar.updateAnalysis();
+                vm.audioContext.resume(); // ?
+
+                const recorderWorkletUrl = await urlFromFiles(
+                    ['recorder-worklet.js', 'libraries/index_rb.js'],
+                );
+                await vm.audioContext.audioWorklet.addModule(recorderWorkletUrl);
 
 
-            vm.analyserNode = vm.audioContext.createAnalyser();
+                vm.recorderWorkletNode = new AudioWorkletNode(
+                    vm.audioContext,
+                    'recorder-worklet',
+                    {processorOptions: vm.sab},
+                );
 
-            vm.mediaStreamSource.connect(vm.analyserNode);
+                vm.recorderWorkletNode.port.postMessage('ping');
 
-            if (vm.config.gui.audioMeter.status) {
-                vm.$root.$refs.audioMeter.init(vm.analyserNode);
-                vm.$root.$refs.audioMeter.updateAnalysis();
+                vm.recorderWorkletNode.port.addEventListener('message', (event) => {
+                    console.log('Received from Worklet' + event.data);
+                });
+                // vm.recorderWorkletNode.port.start(); # TODO do I need this for ping/pong ?
+                // send the mic to the recorderNode --> recorderWorklet
+                vm.mediaStreamSource.connect(vm.recorderWorkletNode);
+                // vm.agentPlayer = new Tone.Player().toDestination();
             }
-
-            // vm.$root.$refs.vectorBar.init();
-            // vm.$root.$refs.vectorBar.updateAnalysis();
-            vm.audioContext.resume(); // ?
-
-            const recorderWorkletUrl = await urlFromFiles(
-                ['recorder-worklet.js', 'libraries/index_rb.js'],
-            );
-            await vm.audioContext.audioWorklet.addModule(recorderWorkletUrl);
-
-
-            vm.recorderWorkletNode = new AudioWorkletNode(
-                vm.audioContext,
-                'recorder-worklet',
-                {processorOptions: vm.sab},
-            );
-
-            vm.recorderWorkletNode.port.postMessage('ping');
-
-            vm.recorderWorkletNode.port.addEventListener('message', (event) => {
-                console.log('Received from Worklet' + event.data);
-            });
-            // vm.recorderWorkletNode.port.start(); # TODO do I need this for ping/pong ?
-            // send the mic to the recorderNode --> recorderWorklet
-            vm.mediaStreamSource.connect(vm.recorderWorkletNode);
-            // vm.agentPlayer = new Tone.Player().toDestination();
         }
         vm.audioContext.resume(); // ?
         /*
         * Web MIDI logic
         */
-        if (navigator.requestMIDIAccess) {
-            navigator.requestMIDIAccess().then(function(access) {
-                vm.WebMIDISupport = true;
-                access.onstatechange = vm.onEnabled;
-            });
-            // Enable WebMIDI, then call onEnabled method.
-            WebMidi.enable()
-                .then(vm.onEnabled)
-                .catch((err) => this.$toasted.show('WebMIDI Error: ' + err));
+        // if (navigator.requestMIDIAccess) {
+        //     navigator.requestMIDIAccess().then(function(access) {
+        //         vm.WebMIDISupport = true;
+        //         access.onstatechange = vm.onEnabled;
+        //     })
+        //     .catch(function(err) {
+        //         console.log('requestMIDIAccess Error: ' + err);
+        //     });
+            
+        //     // Enable WebMIDI, then call onEnabled method.
+        //     WebMidi.enable()
+        //         .then(vm.onEnabled)
+        //         .catch((err) => console.log('WebMIDI Error: ' + err));
+        // }
+        try {
+            if (navigator.requestMIDIAccess) {
+                // Await MIDI permission
+                await this.initializeMIDI();
+                console.log('MIDI initialized');
+                vm.permissionMIDI = true;
+            }
+        } catch (error) {
+            console.error('Error initializing MIDI: ', error);
         }
 
         /*
@@ -418,38 +490,14 @@ export default {
             vm.processUserNoteEvent(newNoteEvent);
         });
 
-        /*
-        * Minor
-        */
-        window.onresize = () => {
-            return (() => {
-                window.screenWidth = document.body.clientWidth;
-                vm.screenWidth = window.screenWidth;
-            })();
-        };
-
-        // Prevent spacebar trigger any button
-        // document.querySelectorAll('button').forEach(function(item) {
-        //     item.addEventListener('focus', function() {
-        //         this.blur();
-        //     });
-        // });
-        document.querySelectorAll('button').forEach((item) => {
-            item.addEventListener('focus', () => {
-                item.blur();
-            });
-        });
-
-        // spacebar trigger play btn
-        document.addEventListener('keypress', function(event) {
-            if (event.code == 'Space' && !vm.$store.getters.getModalStatus) {
-                // spacebar could toggle clock
-                vm.toggleClock();
-            }
-        });
-
+        
         vm.modelLoadTime = Date.now();
         console.log('TONE TONE TONE ', Tone.now());
+
+        // Now set the permissionsGrated flag
+        // It is true if  (permissionMIDI is true) AND (permissionAudio is true OR vm.config.interactionMode.audioMode is false)
+        vm.permissionsGranted = vm.permissionMIDI && (vm.permissionAudio || !vm.config.interactionMode.audioMode);
+        vm.displayPlayBtn();
     },
     methods: {
 
@@ -861,10 +909,10 @@ export default {
                     switch (messageType) {
                     case vm.messageType.STATUS:
                         if (messageValue == vm.statusType.SUCCESS) {
-                            vm.$refs.entryBtn.classList.add('fade-in');
-                            vm.$refs.entryBtn.style.visibility = 'visible';
+                            vm.agentLoaded = true;
+                            vm.displayPlayBtn();
                             vm.modelLoadTime = Date.now() - vm.modelLoadTime;
-                            console.log('success');
+                            // console.log('agent loaded');
                         }
                         break;
                     case vm.messageType.NOTE_LIST: {
@@ -1129,8 +1177,20 @@ export default {
         },
 
         /*
-            * Web MIDI
-            */
+        * Web MIDI
+        */
+        async initializeMIDI() {
+            try {
+                const access = await navigator.requestMIDIAccess();
+                this.WebMIDISupport = true;
+                access.onstatechange = this.onEnabled;
+
+                await WebMidi.enable();
+                this.onEnabled();
+            } catch (err) {
+                console.error('WebMIDI Error:', err);
+            }
+        },
         onEnabled() {
             const vm = this;
             if (WebMidi.inputs.length < 1) {
@@ -1237,6 +1297,17 @@ export default {
             console.log('TONE ENTRY ', Tone.now());
             if (vm.config.clockSettings.autoStart === true) {
                 vm.toggleClock();
+            }
+        },
+
+        displayPlayBtn() {
+            console.log('in displayPlayBtn');
+            if (this.agentLoaded && this.permissionsGranted) {
+                const vm = this;
+                // vm.$refs.entryBtn.classList.remove('fade-out');
+                console.log('AAAAAAAAAAAAAAAAAAAAAAAA');
+                vm.$refs.entryBtn.classList.add('fade-in');
+                vm.$refs.entryBtn.style.visibility = 'visible';
             }
         },
 
